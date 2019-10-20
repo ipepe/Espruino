@@ -79,7 +79,8 @@ devices = {
   'BTN1' : { 'pin' : 'D0', 'pinstate' : 'IN_PULLDOWN' },
   'CAPSENSE' : { 'pin_rx' : 'D11', 'pin_tx' : 'D12' },
   'NFC': { 'pin_a':'D9', 'pin_b':'D10' },
-  'MAG': { 'pin_pwr':'D18',
+  'MAG': { 'device': 'MAG3110',
+           'pin_pwr':'D18',
            'pin_int':'D17',
            'pin_sda':'D20',
            'pin_scl':'D19' }
@@ -95,6 +96,7 @@ board = {
   '_notes' : {
     'D11' : "Capacitive sense. D12 is connected to this pin via a 1 MOhm resistor",
     'D28' : "If pulled up to 1 on startup, D28 and D29 become Serial1",
+    'D22' : "This is used as SCK when driving Neopixels with 'require('neopixel').write'"
   }
 };
 

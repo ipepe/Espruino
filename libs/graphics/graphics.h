@@ -27,6 +27,8 @@ typedef enum {
   JSGRAPHICSTYPE_JS,          ///< Call JavaScript when we want to write something
   JSGRAPHICSTYPE_FSMC,        ///< FSMC (or fake FSMC) ILI9325 16bit-wide LCDs
   JSGRAPHICSTYPE_SDL,         ///< SDL graphics library for linux
+  JSGRAPHICSTYPE_SPILCD,      ///< SPI LCD library
+  JSGRAPHICSTYPE_ST7789_8BIT  ///< ST7789 in 8 bit mode
 } JsGraphicsType;
 
 typedef enum {
@@ -49,9 +51,17 @@ typedef enum {
   JSGRAPHICSFLAGS_COLOR_MASK = JSGRAPHICSFLAGS_COLOR_BASE*7, //< All devices: color order is BRG
 } JsGraphicsFlags;
 
-#define JSGRAPHICS_FONTSIZE_4X6 (-1) // a bitmap font
-#define JSGRAPHICS_FONTSIZE_CUSTOM (-2) // a custom bitmap font made from fields in the graphics object (See below)
-// Positive font sizes are Vector fonts
+typedef enum {
+ JSGRAPHICS_FONTSIZE_SCALE_MASK = 8191, ///< the size of the font
+ JSGRAPHICS_FONTSIZE_FONT_MASK = 7 << 13, ///< the type of the font
+ JSGRAPHICS_FONTSIZE_VECTOR = 0,
+ JSGRAPHICS_FONTSIZE_4X6 = 1 << 13, // a bitmap font
+#ifdef USE_FONT_6X8
+ JSGRAPHICS_FONTSIZE_6X8 = 2 << 13, // a bitmap font
+#endif
+ JSGRAPHICS_FONTSIZE_CUSTOM = 3 << 13,// a custom bitmap font made from fields in the graphics object (See below)
+} JsGraphicsFontSize;
+
 
 #define JSGRAPHICS_CUSTOMFONT_BMP JS_HIDDEN_CHAR_STR"fnB"
 #define JSGRAPHICS_CUSTOMFONT_WIDTH JS_HIDDEN_CHAR_STR"fnW"
@@ -64,7 +74,7 @@ typedef struct {
   unsigned short width, height; // DEVICE width and height (flags could mean the device is rotated)
   unsigned char bpp;
   unsigned int fgColor, bgColor; ///< current foreground and background colors
-  short fontSize; ///< See JSGRAPHICS_FONTSIZE_ constants
+  unsigned short fontSize; ///< See JSGRAPHICS_FONTSIZE_ constants
   short cursorX, cursorY; ///< current cursor positions
 #ifndef SAVE_ON_FLASH
   unsigned char fontAlignX : 2;
@@ -93,7 +103,7 @@ typedef struct JsGraphics {
 void graphicsStructResetState(JsGraphics *gfx);
 /// Completely reset graphics structure including flags
 void graphicsStructInit(JsGraphics *gfx);
-/// Access the Graphics Instance JsVar and get the relevant info in a JsGraphics structure
+/// Access the Graphics Instance JsVar and get the relevant info in a JsGraphics structure. True on success
 bool graphicsGetFromVar(JsGraphics *gfx, JsVar *parent);
 /// Access the Graphics Instance JsVar and set the relevant info from JsGraphics structure
 void graphicsSetVar(JsGraphics *gfx);
@@ -111,12 +121,11 @@ void graphicsFallbackFillRect(JsGraphics *gfx, short x1, short y1, short x2, sho
 void graphicsDrawRect(JsGraphics *gfx, short x1, short y1, short x2, short y2);
 void graphicsDrawEllipse(JsGraphics *gfx, short x, short y, short x2, short y2);
 void graphicsFillEllipse(JsGraphics *gfx, short x, short y, short x2, short y2);
-void graphicsDrawString(JsGraphics *gfx, short x1, short y1, const char *str);
 void graphicsDrawLine(JsGraphics *gfx, short x1, short y1, short x2, short y2);
 void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices); // may overwrite vertices...
 #ifndef NO_VECTOR_FONT
 unsigned int graphicsFillVectorChar(JsGraphics *gfx, short x1, short y1, short size, char ch); ///< prints character, returns width
-unsigned int graphicsVectorCharWidth(JsGraphics *gfx, short size, char ch); ///< returns the width of a character
+unsigned int graphicsVectorCharWidth(JsGraphics *gfx, unsigned short size, char ch); ///< returns the width of a character
 #endif
 /// Draw a simple 1bpp image in foreground colour
 void graphicsDrawImage1bpp(JsGraphics *gfx, short x1, short y1, short width, short height, const unsigned char *pixelData);

@@ -618,20 +618,76 @@ uint8_t match_request : 1;               If 1 requires the application to report
         }
         break;
       }
-      case BLEP_TASK_PASSKEY_REQUEST: {
-         JsVar *gattServer = bleGetActiveBluetoothGattServer();
-         if (gattServer) {
-           JsVar *bluetoothDevice = jsvObjectGetChild(gattServer, "device", 0);
-           jsvObjectSetChildAndUnLock(gattServer, "connected", jsvNewFromBool(false));
-           if (bluetoothDevice) {
-             // HCI error code, see BLE_HCI_STATUS_CODES in ble_hci.h
-             jsiQueueObjectCallbacks(bluetoothDevice, JS_EVENT_PREFIX"passkeyRequest", 0, 0);
-             jshHadEvent();
-           }
-           jsvUnLock2(gattServer, bluetoothDevice);
-         }
-         break;
+      case BLEP_TASK_AUTH_KEY_REQUEST: {
+        uint16_t conn_handle = data;
+        if (conn_handle == m_central_conn_handle) {
+          JsVar *gattServer = bleGetActiveBluetoothGattServer();
+          if (gattServer) {
+            jsvObjectSetChildAndUnLock(gattServer, "connected", jsvNewFromBool(false));
+            JsVar *bluetoothDevice = jsvObjectGetChild(gattServer, "device", 0);
+            if (bluetoothDevice) {
+              // HCI error code, see BLE_HCI_STATUS_CODES in ble_hci.h
+              jsiQueueObjectCallbacks(bluetoothDevice, JS_EVENT_PREFIX"passkeyRequest", 0, 0);
+              jshHadEvent();
+            }
+            jsvUnLock2(gattServer, bluetoothDevice);
+          }
+        } else if (conn_handle == m_peripheral_conn_handle) {
+          bool ok = false;
+          JsVar *options = jsvObjectGetChild(execInfo.hiddenRoot, BLE_NAME_SECURITY, 0);
+          if (jsvIsObject(options)) {
+            JsVar *oobKey = jsvObjectGetChild(options, "oob", 0);
+            JSV_GET_AS_CHAR_ARRAY(keyPtr, keyLen, oobKey);
+            if (keyPtr && keyLen==BLE_GAP_SEC_KEY_LEN) {
+              ok = true;
+              //jsiConsolePrintf("Replying with Auth key %d,%d,%d,%d...\n",keyPtr[0],keyPtr[1],keyPtr[2],keyPtr[3]);
+              jsble_check_error(sd_ble_gap_auth_key_reply(conn_handle,
+                                                   BLE_GAP_AUTH_KEY_TYPE_OOB,
+                                                   (uint8_t *)keyPtr));
+            }
+            jsvUnLock(oobKey);
+          }
+          jsvUnLock(options);
+          if (!ok) jsExceptionHere(JSET_INTERNALERROR, "Auth key requested, but NRF.setSecurity({oob}) not valid");
+        }
+        break;
        }
+      case BLEP_TASK_AUTH_STATUS: {
+        //uint16_t conn_handle = data;
+        ble_gap_evt_auth_status_t *auth_status = (ble_gap_evt_auth_status_t*)buffer;
+        JsVar *o = jsvNewObject();
+        if (o) {
+          const char *str=NULL;
+          switch(auth_status->auth_status) {
+            case BLE_GAP_SEC_STATUS_SUCCESS                : str="SUCCESS";break;
+            case BLE_GAP_SEC_STATUS_TIMEOUT                : str="TIMEOUT";break;
+            case BLE_GAP_SEC_STATUS_PDU_INVALID            : str="PDU_INVALID";break;
+            case BLE_GAP_SEC_STATUS_RFU_RANGE1_BEGIN       : str="RFU_RANGE1_BEGIN";break;
+            case BLE_GAP_SEC_STATUS_RFU_RANGE1_END         : str="RFU_RANGE1_END";break;
+            case BLE_GAP_SEC_STATUS_PASSKEY_ENTRY_FAILED   : str="PASSKEY_ENTRY_FAILED";break;
+            case BLE_GAP_SEC_STATUS_OOB_NOT_AVAILABLE      : str="OOB_NOT_AVAILABLE";break;
+            case BLE_GAP_SEC_STATUS_AUTH_REQ               : str="AUTH_REQ";break;
+            case BLE_GAP_SEC_STATUS_CONFIRM_VALUE          : str="CONFIRM_VALUE";break;
+            case BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP       : str="PAIRING_NOT_SUPP";break;
+            case BLE_GAP_SEC_STATUS_ENC_KEY_SIZE           : str="ENC_KEY_SIZE";break;
+            case BLE_GAP_SEC_STATUS_SMP_CMD_UNSUPPORTED    : str="SMP_CMD_UNSUPPORTED";break;
+            case BLE_GAP_SEC_STATUS_UNSPECIFIED            : str="UNSPECIFIED";break;
+            case BLE_GAP_SEC_STATUS_REPEATED_ATTEMPTS      : str="REPEATED_ATTEMPTS";break;
+            case BLE_GAP_SEC_STATUS_INVALID_PARAMS         : str="INVALID_PARAMS";break;
+            case BLE_GAP_SEC_STATUS_DHKEY_FAILURE          : str="DHKEY_FAILURE";break;
+            case BLE_GAP_SEC_STATUS_NUM_COMP_FAILURE       : str="NUM_COMP_FAILURE";break;
+            case BLE_GAP_SEC_STATUS_BR_EDR_IN_PROG         : str="BR_EDR_IN_PROG";break;
+            case BLE_GAP_SEC_STATUS_X_TRANS_KEY_DISALLOWED : str="X_TRANS_KEY_DISALLOWED";break;
+          }
+          jsvObjectSetChildAndUnLock(o,"auth_status",str?jsvNewFromString(str):jsvNewFromInteger(auth_status->auth_status));
+          jsvObjectSetChildAndUnLock(o, "bonded", jsvNewFromBool(auth_status->bonded));
+          jsvObjectSetChildAndUnLock(o, "lv4", jsvNewFromInteger(auth_status->sm1_levels.lv4));
+          jsvObjectSetChildAndUnLock(o, "kdist_own", jsvNewFromInteger(*((uint8_t *)&auth_status->kdist_own)));
+          jsvObjectSetChildAndUnLock(o, "kdist_peer", jsvNewFromInteger(*((uint8_t *)&auth_status->kdist_peer)));
+          bleQueueEventAndUnLock(JS_EVENT_PREFIX"security",o);
+        }
+        break;
+      }
 #endif
    default:
      jsWarn("jsble_exec_pending: Unknown enum type %d",(int)blep);
@@ -870,7 +926,7 @@ void nus_transmit_string() {
       (bleStatus & BLE_IS_SLEEPING)) {
     // If no connection, drain the output buffer
     nuxTxBufLength = 0;
-    while (jshGetCharToTransmit(EV_BLUETOOTH)>=0);
+    jshTransmitClearDevice(EV_BLUETOOTH);
     return;
   }
   /* 6 is the max number of packets we can send
@@ -913,6 +969,12 @@ void nus_transmit_string() {
 #endif
     if (err_code == NRF_SUCCESS) {
       bleStatus |= BLE_IS_SENDING;
+    } else if (err_code==NRF_ERROR_INVALID_STATE) {
+      // If no notifications we are connected but the central isn't reading, so sends will fail.
+      // Ideally we check m_nus.is_notification_enabled but SDK15 changed this, so lets just see if
+      // the send creates a NRF_ERROR_INVALID_STATE error
+      nuxTxBufLength = 0; // clear tx buffer
+      jshTransmitClearDevice(EV_BLUETOOTH); // clear all tx data in queue
     }
     /* if it failed to send all or any data we keep it around in
      * nusTxBuf (with count in nuxTxBufLength) so next time around
@@ -1139,22 +1201,26 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context) {
               BLE_GAP_PASSKEY_LEN);
           break;
       case BLE_GAP_EVT_AUTH_KEY_REQUEST:
-          jsble_queue_pending(BLEP_TASK_PASSKEY_REQUEST, p_ble_evt->evt.gap_evt.conn_handle);
+          jsble_queue_pending(BLEP_TASK_AUTH_KEY_REQUEST, p_ble_evt->evt.gap_evt.conn_handle);
           break;
-      case BLE_GAP_EVT_LESC_DHKEY_REQUEST:
-          //jsiConsolePrintf("BLE_GAP_EVT_LESC_DHKEY_REQUEST\n");
-          err_code = ecc_p256_shared_secret_compute(&m_lesc_sk.sk[0], &p_ble_evt->evt.gap_evt.params.lesc_dhkey_request.p_pk_peer->pk[0], &m_lesc_dhkey.key[0]);
+      case BLE_GAP_EVT_LESC_DHKEY_REQUEST: {
+        /* Nordic SDK gives us request.p_pk_peer, but it's UNALIGNED! Then the next command
+           (taken straight from their SDK) fails with an error because it isn't aligned.
+           We have to manually copy the key to a new, aligned value.  */
+          ble_gap_lesc_p256_pk_t key;
+          memcpy(&key.pk[0], &p_ble_evt->evt.gap_evt.params.lesc_dhkey_request.p_pk_peer->pk[0], sizeof(ble_gap_lesc_p256_pk_t));
+          err_code = ecc_p256_shared_secret_compute(&m_lesc_sk.sk[0], &key.pk[0], &m_lesc_dhkey.key[0]);
           APP_ERROR_CHECK_NOT_URGENT(err_code);
           err_code = sd_ble_gap_lesc_dhkey_reply(p_ble_evt->evt.gap_evt.conn_handle, &m_lesc_dhkey);
           APP_ERROR_CHECK_NOT_URGENT(err_code);
           break;
+      }
        case BLE_GAP_EVT_AUTH_STATUS:
-         /*jsiConsolePrintf("BLE_GAP_EVT_AUTH_STATUS: status=0x%x bond=0x%x lv4: %d kdist_own:0x%x kdist_peer:0x%x\r\n",
-                        p_ble_evt->evt.gap_evt.params.auth_status.auth_status,
-                        p_ble_evt->evt.gap_evt.params.auth_status.bonded,
-                        p_ble_evt->evt.gap_evt.params.auth_status.sm1_levels.lv4,
-                        *((uint8_t *)&p_ble_evt->evt.gap_evt.params.auth_status.kdist_own),
-                        *((uint8_t *)&p_ble_evt->evt.gap_evt.params.auth_status.kdist_peer));*/
+          jsble_queue_pending_buf(
+              BLEP_TASK_AUTH_STATUS,
+              p_ble_evt->evt.gap_evt.conn_handle,
+              (char*)&p_ble_evt->evt.gap_evt.params.auth_status,
+              sizeof(ble_gap_evt_auth_status_t));
           break;
 #endif
 
@@ -1842,6 +1908,7 @@ static ble_gap_sec_params_t get_gap_sec_params() {
     jsvUnLock(v);
     if (jsvGetBoolAndUnLock(jsvObjectGetChild(options, "mitm", 0))) sec_param.mitm=1;
     if (jsvGetBoolAndUnLock(jsvObjectGetChild(options, "lesc", 0))) sec_param.lesc=1;
+    if (jsvGetBoolAndUnLock(jsvObjectGetChild(options, "oob", 0))) sec_param.oob=1;
   }
   return sec_param;
 }
@@ -2347,7 +2414,11 @@ void jsble_advertising_stop() {
    if (v) {
      ble_gap_addr_t p_addr;
      if (bleVarToAddr(v, &p_addr)) {
+#if NRF_SD_BLE_API_VERSION < 3
+       err_code = sd_ble_gap_address_set(BLE_GAP_ADDR_CYCLE_MODE_NONE,&p_addr);
+#else
        err_code = sd_ble_gap_addr_set(&p_addr);
+#endif
        if (err_code) jsiConsolePrintf("sd_ble_gap_addr_set failed: 0x%x\n", err_code);
      }
    }
@@ -3008,4 +3079,5 @@ uint32_t jsble_central_send_passkey(char *passkey) {
 
 
 #endif // BLUETOOTH
+
 
